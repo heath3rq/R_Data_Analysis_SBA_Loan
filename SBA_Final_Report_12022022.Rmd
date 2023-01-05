@@ -1,0 +1,767 @@
+---
+title: "Small Business Loan in North Carolina Statistical Analysis"
+author: "Heather Qiu, Jenny Shen, Aditya John, Isha Singh"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+  word_document: default
+---
+
+```{r setup, include=FALSE,warning = FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+##Clear environment and load libraries
+rm(list = ls())
+library(ISLR2)
+library(kableExtra)
+library(stargazer)
+library(ggplot2)
+library(caret)
+library(dplyr)
+library(leaps)
+library(tidyverse)
+library(table1)
+library(Hmisc)
+library(lubridate)
+library(caret)
+library(pROC)
+library(rms)
+library(car)
+library(outliers)
+library(xtable)
+library(MASS)
+library(arm)
+library(miscTools)
+library(openintro)
+library(vtable)
+library(maps)
+library(mapproj)
+```
+
+```{r pre_process, echo = FALSE, results = "asis", message = FALSE, warning = FALSE}
+##Read into the original dataset
+sbl <- read.csv('SBAnational.csv',header=T, na.strings=c(""," ","NA"))
+##Subset the data to North Carolina 
+sbl_nc <- sbl[sbl$State == "NC",] #14308 rows
+##Remove unwanted columns
+sbl_reduced <- subset(sbl_nc, select = c(LoanNr_ChkDgt,Name,State, 
+                                         Bank,Term,NoEmp,NewExist,
+                                         CreateJob, RetainedJob, 
+                                         UrbanRural, RevLineCr, LowDoc, 
+                                         DisbursementDate, SBA_Appv, 
+                                         MIS_Status)) 
+
+##Remove row with missing values 
+##or rows of binary variables that contain values other than yes and no
+##5448 observations Remained after Cleaning
+sbl_reduced$NewExist[sbl_reduced$NewExist == 0] <- NA 
+sbl_reduced$UrbanRural[sbl_reduced$UrbanRural == 0] <- NA
+sbl_reduced <- sbl_reduced[!is.na(sbl_reduced$RevLineCr) == TRUE ,]
+sbl_reduced <- sbl_reduced[!is.na(sbl_reduced$NewExist) == TRUE ,]
+sbl_reduced <- sbl_reduced[!is.na(sbl_reduced$UrbanRural) == TRUE ,]
+sbl_reduced <- sbl_reduced[!is.na(sbl_reduced$LowDoc) == TRUE ,]
+sbl_reduced <- sbl_reduced[!is.na(sbl_reduced$DisbursementDate) == TRUE ,]
+sbl_reduced <- sbl_reduced[!is.na(sbl_reduced$MIS_Status) == TRUE ,]
+sbl_reduced <- subset(sbl_reduced, RevLineCr =="Y" | RevLineCr =="N")
+sbl_reduced <- subset(sbl_reduced, LowDoc =="Y" | LowDoc =="N")
+##Remove '$' sign and commas then convert to double in the money columns 
+##and store the values in new columns
+sbl_reduced$SBA_Approved_Amount <-str_replace_all(
+  sbl_reduced$SBA_Appv,"[\\$,]","") %>% as.double()
+## Extract the year of disbursement from Disbursement Date and 
+## categorize the data to indicate financial crisis
+sbl_reduced$Disbursement_Year <- year(as.Date
+                                      (sbl_reduced$DisbursementDate,
+                                        "%d-%b-%y"))
+sbl_reduced$Recession <- factor(sbl_reduced$Disbursement_Year, 
+                                levels = 
+                                  c("1994","1995","1996","1999","2000",
+                                    "2001","2002","2003","2004","2005",
+                                    "2006","2007","2008","2009","2010",
+                                    "2011","2012","2013","2014"),
+                                labels = c("N","N","N","N","N","N","N","N",
+                                           "N","N","N","Y","Y","Y","N","N",
+                                           "N","N","N"))
+##Factor Categorical Variables listed as numeric
+sbl_reduced$New_or_Existing <- factor(sbl_reduced$NewExist, 
+                                      levels = c("1","2"), 
+                                      labels = c("Existing Business",
+                                                 "New Business"))
+sbl_reduced$Urban_or_Rural <- factor(sbl_reduced$UrbanRural, 
+                                     levels = c("1","2"), 
+                                     labels = c("Urban","Rural"))
+sbl_reduced$RevolvingLineCredit <- as.factor(sbl_reduced$RevLineCr)
+sbl_reduced$LowDocumentProgram <- as.factor(sbl_reduced$LowDoc)
+##Relabel or Rename the non-informative column
+sbl_reduced$Default_Status <- factor(sbl_reduced$MIS_Status, 
+                                     levels = c("P I F","CHGOFF"), 
+                                     labels = c("Not Defaulted","Defaulted"))
+colnames(sbl_reduced)[colnames(sbl_reduced) == 'NoEmp'] <- 'EmployeeCount'
+colnames(sbl_reduced)[colnames(sbl_reduced) == 'CreateJob'] <- 'JobCreated'
+colnames(sbl_reduced)[colnames(sbl_reduced) == 'RetainedJob'] <- 'JobRetained'
+##check null values by columns
+#colSums(is.na(sbl_reduced))
+```
+
+## I. __Abstract__
+
+U.S. Small Business Administration (SBA) is responsible for promoting and assisting small businesses in the U.S. credit market. The dataset is obtained from Li, Mickel, and Taylor (2018), “Should This Loan be Approved or Denied?” The file contains various data points about companies that have applied for loans, such as the number of employees, the locality type, and the loan term, amongst others. Our goal with this analysis is to determine if these data points can be used to determine the likelihood of loan defaults and what impact the amount of loan the SBA approves for small businesses in the state of North Carolina.
+ 
+For this study, we investigate the impact of loan duration, the presence of a revolving line of credit, and the employee count on the loan amount approved by the SBA. We find that all have a significant relationship with the amount covered by the SBA loan. The loan term and the number of employees have a positive relationship with the approved amount. On the other hand, the presence of a revolving line of credit has a negative relationship with the amount covered by the SBA. The final model has an R$^2$ of 0.4031, meaning that 40.31% of the variability in the dataset could be explained by our model. 
+
+Additionally, we investigate multiple factors that might affect the good standing of a loan. The variables (1) the loan term, (2) the number of employees, (3) the number of jobs created, (4) whether the business is in urban or rural areas, (5) the revolving line of credit status, (6) whether the loan is part of the LowDoc Loan program, (7) whether the loan was disbursed during recession years between 2007 and 2009, and (8) SBA’s guaranteed amount of approved, are found to have a significant relationship with the status of loan default at the $\alpha=0.05$ significance level. Of the above, we find that the most significant factor is the loan term, with the intuition being that the longer the loan term, the more likely the company is to default on the loan. We also observe that the second most impactful driver of loan defaulting is whether the loan was distributed during the 2008 recession. Last, we identify that the whether the company is a new or existing business and the number of jobs retained by the company rank last and second last, respectively, in terms of the effect. Our model has an accuracy rate of 79.72%.
+
+## II. __Introduction__
+
+The default rate in the banking industry is a significant indicator for evaluating the economic situation. Small businesses, more specifically, have higher probabilities of default due to their limited size and budget. Moreover, the proportion of bank debt to total debt in small businesses is roughly twice that of large firms (Ou, 2005). Therefore, it is crucial to evaluate the default risk of small businesses for economic stability purposes.
+
+SBA plays the role of an insurance provider to banks by guaranteeing a portion of the loan. In the case that a loan goes into default, SBA then covers the amount that they guarantee. Despite the safety net provided by the SBA, banks will still incur losses when a loan defaults because not all dollar amount is covered by SBA. Therefore, our analysis aims to analyze the probability that a loan is to default and identify the key factors that impact the loan amount of SBA guaranteed.
+
+For our first research question, we are interested in how the aforementioned specific factors can be used to determine the amount covered at the SBA level. We hope to understand the impact that these factors have on the loan and whether they can be used to quantify the amount that the SBA should cover. 
+
+Our second research question is more open-ended. We aim to determine what are the various factors that have significant relationships with the status of loan default. We are also interested in measuring the relative impact size among all predictors in scope.
+
+
+## III. __Methods__
+
+```{r dataset_eda, echo = FALSE, results = "asis", message = FALSE, warning = FALSE,fig.width=11,fig.height=5,fig.align='center',fig.cap="Exploratory Data Analysis of SBA Loans"}
+
+sbl_reduced_50 <- sbl_reduced[which(sbl_reduced$EmployeeCount < 50),]
+
+par(mfrow=c(1,3))
+plot(sbl_reduced_50$Term, log(sbl_reduced_50$SBA_Approved_Amount), 
+     xlab="Loan Term", ylab="SBA Approved Amount")
+plot(sbl_reduced$RevolvingLineCredit, log(sbl_reduced$SBA_Approved_Amount), 
+     xlab="Revolving line of Credit", ylab="SBA Approved Amount")
+plot(sbl_reduced_50$EmployeeCount, log(sbl_reduced_50$SBA_Approved_Amount), 
+     xlab="Employee Count", ylab="SBA Approved Amount")
+```
+
+
+### Data
+
+The initial dataset includes over 14,000 observations for small business loans in North Carolina. We first removed loan records with missing values. Additionally, there are non-binary values in binary predictors. Under the variable that determines whether the loan is applied through the low document program, for instance, we found more values than the expected Yes and No answers. Without additional information from the data source, we removed loan records with non-binary values in binary covariates. We also subset variables based on our research interests using apriori variable selection. Because the number of predictors is limited compared to the total observations, additional variable selection is not necessary. We also collapsed the disbursement date of loans into two main categories and named the variable, Recession. The years between 2017 and 2019 are labeled as 'yes' and 'no' for the rest. After trimming the dataset, the final data includes 5,448 observations. At last, we limit the analysis to only companies with less than 50 employees for the first research question. 
+
+With regard to the EDA for our first research question, we can see that the loan term has a positive relationship with the SBA approval amount. We also notice a clear difference corresponding to whether the business has a revolving line of credit. Companies with existing revolving lines of credit receive lower amounts guaranteed by the SBA when compared to businesses without revolving lines of credit. 
+
+With regard to the EDA for our second research question, we are interested in exploring the relationships among several predictors and the status of loan default. The descriptive statistics of the dataset (Table 0. Descriptive Statistics of SBA Loan) show a comprehensive overview of the data set bifurcated using loan status. Among the 5,448 loan records, one-fourth of loans defaulted, while the rest was paid in full. Among all borrowers, over 60% are existing small businesses. On average, these businesses create two jobs and retain five jobs. Roughly four-fifths of these companies operate in cities across the country, while the remaining fifth runs in rural areas. About 65% of the small businesses do not have a revolving line of credits at the time of application; the vast majority (98.5%) applied through the low documentation program, designed to streamline the application process for borrowers. 
+
+\begin{center}
+Table 0: Descriptive Statistics of SBA Loan
+\end{center}
+```{r appendix2, echo = FALSE, results = "asis", message = FALSE, warning = FALSE,fig.width=6,fig.height=5,fig.align='center'}
+sbl_reduced$EmployeeCount <- setLabel(
+  sbl_reduced$EmployeeCount, "Employee Count")
+sbl_reduced$New_or_Existing <- setLabel(
+  sbl_reduced$New_or_Existing, "New or Existing Business")
+sbl_reduced$JobCreated <- setLabel(
+  sbl_reduced$JobCreated, "Job Created")
+sbl_reduced$JobRetained <- setLabel(
+  sbl_reduced$JobRetained, "Job Retained")
+sbl_reduced$Urban_or_Rural <- setLabel(
+  sbl_reduced$Urban_or_Rural, "Urban or Rural Location")
+sbl_reduced$RevolvingLineCredit <- setLabel(
+  sbl_reduced$RevolvingLineCredit, "Revolving Line of Credit")
+sbl_reduced$LowDocumentProgram <- setLabel(
+  sbl_reduced$LowDocumentProgram, "Low Document Program")
+sbl_reduced$SBA_Approved_Amount <- setLabel(
+  sbl_reduced$SBA_Approved_Amount, "SBA Approved Amount")
+
+table1(~Term+EmployeeCount+New_or_Existing+JobCreated
+       +JobRetained+Urban_or_Rural+RevolvingLineCredit
+       +LowDocumentProgram+Recession+SBA_Approved_Amount
+       |Default_Status, 
+       data=sbl_reduced)
+
+```
+
+### Model
+
+For our first research questions, we are interested in assessing the impact of 3 variables: (1) Loan Term, (2) Revolving Line of Credit, and (3) Employee count. Our dependent variable is the amount approved by the SBA, which is a continuous variable. Given the nature of our response variable with more than one independent variable, we fit a multi-linear regression model on the dataset. Linear regression helps quantify the relationship between the dependent and independent variables. 
+
+For the second research question, we performed apriori variable selection to prune the list of variables and retained the ones that are useful in modeling the dependent variable based on domain knowledge. In addition, we excluded the variables loan charged-off amount and outstanding gross amount, as they are multivariates of the dependent variable. Here is the final list of variables we will include: (1) the loan term, (2) the number of employees, (3) the new or existing business, (4) the number of jobs created, (5) the number of jobs retained, (6) whether the business is in urban or rural areas, (7) the revolving line of credit status, (8) whether the loan is part of the LowDoc Loan program, (9) whether the loan was disbursed during recession years, and (10) SBA’s guaranteed amount of approved loan. We chose to fit a multiple logistic regression model because there are several predictors, and our dependent variable is a binary categorical variable. Logistic regression estimates the probability of an event occurring (i.e., loan defaulting versus not) based on a given set of independent variables. In logistic regression, a logit transformation is applied to the odds, which is the probability of success divided by the probability of failure. In the case of the small business loan, the preferred outcome is when a loan gets paid in full.
+
+### Model Assessment
+
+For both models, the following will be performed to ensure goodness of fit and performance. 
+
+1. Significance Evaluation:\
+For each predictor, we will examine the p-values. A predictor is considered significant at the $\alpha=0.05$ significance level. Additionally, we will also use t-values to assess the impact size of each predictor on the outcome variable. 
+
+2. Outliers, Influential Points, and High-Leverage Points Identification:\
+Using Cook's distance, we will determine the presence of outliers, influential points, and high-leverage points in the model. If any is identified, we will fit two models, one with and one without outliers, and present our findings. 
+
+3. Validity of Assumptions:\
+Diagnostic plots and binned residual plots will be used to show that the underlying assumptions about the data concerning the model are not violated. 
+
+4. Presence of Multicollinearity:\
+Models will be tested for multicollinearity using VIF values. Any variables that exhibit this behavior will be removed. 
+
+5. Performance Assessment:\
+To evaluate the overall model performance, we utilize the R$^2$ metric and the confusion matrix's accuracy metric.
+
+
+## IV. __Results__
+
+### First Research Question: How do the requested loan duration, revolving line of credit, and employee count of a small business impact the amount of the approved SBA loan in North Carolina for businesses with less than 50 employees?
+```{r mlr_model_fit, echo = FALSE, results = "asis",fig.width=6,fig.height=5,fig.align='center'}
+
+linear_regression <- lm(log(SBA_Approved_Amount)~Term+RevolvingLineCredit
+                        +EmployeeCount, data =sbl_reduced_50)
+
+## Obtain summary stats - coefficient estimates, SEs, p-values, and confidence interval 
+mlrmat <- matrix(
+  c(round(summary(linear_regression)$coefficients[,1:3],3),
+    "<.001","<.001","<.001","<.001",round(confint(linear_regression),3)),
+  nrow=4,ncol=6)
+mlrmat <- insertRow(mlrmat,3,c("","","","","",""))
+mlrmat <- insertRow(mlrmat,5,c(" -"," -"," -"," -"," -"," -"))
+
+rownames(mlrmat) <- c("Intercept","Term","Revolving line of Credit",
+                      "Yes", "No", "Employee Count")
+
+kable(mlrmat,row.names=TRUE,
+      col.names=c("Estimate","SE","t value","Pr(>|t|)","CI 2.5 %","CI 97.5 %"),
+      format="latex",
+      booktabs=T,
+      caption="Linear Regression Model Summary Statistics") %>%
+  kable_styling(position="center",latex_options = c("hold_position")) %>%
+  add_indent(c(4,5)) %>%
+  add_footnote(c("SD:Standard Error; CI: Confidence Interval",
+                 "Adjusted R-squared value: 40.28%"), notation="number")
+```
+
+Since the p-value for all the predictors, the loan term, the number of employees, and the revolving line of credit are smaller than 0.05, they are statistically significant in predicting the approved amount by SBA. Based on the absolute t-values of three independent variables, the loan term has the highest absolute t-value (38.49), which demonstrates the duration has the greatest impact on the loan approved amount. The other two predictors present similar absolute t-values, with 25.21 for the revolving line of credit and 24.68 for employee count.
+
+The highlight is that the loan term and the number of employees positively correlate to the guaranteed loan amount by the SBA. For every additional month in the loan term, the average log of the SBA approved amount, measured in dollars, increases by approximately 0.01; for every worker employed by the small businesses, the average log of the SBA loan coverage increases by about 0.05, holding all else constant. On the other hand, the presence of a revolving line of credit negatively correlates to the amount covered by the SBA. For companies with existing revolving lines of credit, the average log of SBA's approved loan amount in USD decreases by approximately 0.86 compared to businesses without revolving lines of credit, holding all else constant.
+
+Hence, we infer that there is a positive correlation between the length of the loan term and the SBA's approved loan amount. SBA seems more inclined to back up loans with extra dollars for small businesses with more employees. However, SBA tends to be less willing to lend more money to companies with existing revolving lines of credit.
+
+<!-- * Intercept: The default value of log of approved SBA amount, holding all the predictors remaining the default, is 9.51 -->
+
+<!-- * Term: For every additional month in the loan term, the average log of SBA approved amount for the loan increases by approximately 0.01, holding all else constant.  -->
+
+<!-- * Employee Count: For every additional employee the business employs, the average log of amount approved by the SBA for loan coverage increases by approximately 0.05, holding all else constant.  -->
+
+<!-- * Revolving Line of Credit: For companies that posses a revolving line of credit, the average log of SBA approved amount for the loan decreases by approximately 0.86 compared to business without revolving line of credit, holding all else constant.  -->
+
+There are no significant outliers, high-leverage points, or influential points identified in the linear regression model. We do not find any underlying linear regression assumptions to be violated in the data, thereby requiring no additional transformation. There is also no evidence for multicollinearity based on VIF values. 
+
+### Second Research Question: What are the different factors that impact the defaulting of a loan in North Carolina?
+```{r logistic_model_fit, echo = FALSE, results = "asis", message = FALSE, warning = FALSE,fig.width=6,fig.height=5,fig.align='center'}
+## Fit logistic regression with all in-scope predictors
+lr <- glm(Default_Status~Term+EmployeeCount+New_or_Existing+JobCreated
+          +JobRetained+Urban_or_Rural+RevolvingLineCredit+LowDocumentProgram
+          +Recession+SBA_Approved_Amount, data = sbl_reduced, 
+          family = binomial(link = logit))
+
+## Obtain summary stats - coefficient estimates, SEs, and p-values
+glmmat <- matrix(
+  c(round(summary(lr)$coefficients[,1:3],3),
+    "<.001","<.001","<.001","0.56","<.05","0.43",
+    "<.001","<.001","<.001","<.001","<.05",round(exp(coef(lr)),3),
+    round(exp(confint(lr)),3)), nrow=11,ncol=7)
+glmmat <- insertRow(glmmat,4,c("","","","","","",""))
+glmmat <- insertRow(glmmat,6,c("-","-","-","-","-","-","-"))
+glmmat <- insertRow(glmmat,9,c("","","","","","",""))
+glmmat <- insertRow(glmmat,11,c("-","-","-","-","-","-","-"))
+glmmat <- insertRow(glmmat,12,c("","","","","","",""))
+glmmat <- insertRow(glmmat,14,c("-","-","-","-","-","-","-"))
+glmmat <- insertRow(glmmat,15,c("","","","","","",""))
+glmmat <- insertRow(glmmat,17,c("-","-","-","-","-","-","-"))
+glmmat <- insertRow(glmmat,18,c("","","","","","",""))
+glmmat <- insertRow(glmmat,20,c("-","-","-","-","-","-","-"))
+
+rownames(glmmat) <- c("Intercept","Term","Employee Count",
+                      "New or Existing Business","New Business",
+                      "Existing Business","Job Created",
+                      "Job Retained","Urban or Rural Location",
+                      "Rural","Urban", "Revolving Line of Credit",
+                      "Yes","No","Low Document Program","Yes","No",
+                      "Recession","Yes","No","SBA Approved Amount")
+kable(glmmat,row.names=TRUE,
+      col.names=c("Estimate","SE","z value","Pr(>|t|)","Odds Ratio",
+                  "CI 2.5 %","CI 97.5 %"),
+      format="latex",
+      booktabs=T,
+      caption="Logistic Regression Model Summary Statistics") %>%
+  kable_styling(position="center",latex_options = c("hold_position")) %>%
+  add_indent(c(5,6,10,11,13,14,16,17,19,20)) %>%
+  add_footnote("SD:Standard Error; CI: Confidence Interval", 
+               notation="number") 
+
+```
+
+The following predictors are statistically significant because their p-values are smaller than 0.05: (1) the loan term, (2) the number of employees, (3) the number of jobs created, (4) whether the business is in urban or rural areas, (5) the revolving line of credit status, (6) whether the loan is part of the LowDoc Loan program, (7) whether the loan was disbursed during recession years between 2007 and 2009, and (8) SBA’s guaranteed amount of approved. By observing the absolute z-values, we identify the four most impactful drivers of loan defaulting: the loan term (24.25), whether the loan was distributed during the 2008 financial crisis (14.75), the revolving line of credit status (12.5), and whether the business locates in urban or rural settings (11.64). 
+
+The highlight is that the odds of borrowers defaulting on loans increase during the 2008 financial crisis and when businesses operate in urban areas. For instance, the odds of loans folding in North Carolina during the recession rise by approximately 210% compared to the non-recession period; the odds of small businesses in rural areas defaulting on a loan decrease by roughly 69% compared to urban areas, holding all else constant. 
+
+On the other hand, the odds of businesses defaulting on loans decrease with each additional month in loan term and if the companies have existing lines of credit. For every extra month of the loan term, the odds of small businesses in North Carolina defaulting on a loan decrease by about 3%; the odds of loan folding for small businesses with existing revolving lines of credit decrease by approximately 63% compared to an establishment with no revolving line of credit, holding all else constant. 
+
+Hence, we infer that small businesses in urban areas with no revolving lines of credit and shorter loan terms are more likely to default on their loans during the recession period. 
+
+<!-- * Term: For every additional month of the loan term, the odds of small businesses in North Carolina defaulting on a loan decrease by approximately $(1-e^{-0.0319}) * 100 = 3.14\%$,holding all else constant. -->
+
+<!-- * Recession: The odds of small businesses in North Carolina defaulting on a loan during the recession increase by approximately $(e^{1.1327}-1) * 100 = 210.40\%$ compared to the non-recession period, holding all else constant. -->
+
+<!-- * Revolving Line of Credit: The odds of small businesses in North Carolina defaulting on a loan where the business has an existing revolving line of credit decrease by approximately $(1-e^{-0.9981)}) * 100 = 63.14\%$ compared to an establishment with no revolving line of credit, holding all else constant. -->
+
+<!-- * Urban or Rural Location: The odds of small businesses in North Carolina defaulting on a loan in rural areas decrease by approximately $(1-e^{-1.1697}) * 100 = 68.95\%$ compared to urban areas, holding all else constant. -->
+
+<!-- * Intercept: The odds of small businesses in North Carolina defaulting on a loan, holding all the predictors remain the default, is approximately 4.80, that is $e^{1.5679}$. -->
+
+<!-- * Employee Count: For every additional number of employees in the business, the odds of small businesses in North Carolina defaulting on a loan decrease by approximately $(1-e^{-0.0202}) * 100 = 2.00\%$, holding all else constant.  -->
+
+<!-- * Job Created: For every additional number of jobs created by the business, the odds of small businesses in North Carolina defaulting on a loan increase by approximately $(e^{0.0056}-1) * 100 = 0.56%$, holding all else constant. -->
+
+<!-- * Low-Document Program: The odds of small businesses in North Carolina defaulting on a loan applied through the low-document program increase by approximately $(1-e^{-1.309}) * 100 = 73.00\%$ compared to a loan submitted outside of the low-document program, holding all else constant. -->
+
+<!-- * SBA Approved Amount: For every unit increase of SBA’s guaranteed approved loan amount, the odds of small businesses in North Carolina defaulting on a loan decrease by $(1-e^{-6.77*10^{-7}}) * 100 = 6.77*10^{-5}\%$, holding all else constant.  -->
+
+We are not concerned about multicollinearity issues in the logistic regression analysis because all the VIF values are below two. From the binned residuals versus predicted probabilities (Figure 4 in the appendix), we confirm the assumptions of logistic regression since all residuals are distributed randomly within the range. Though a few points lie outside the confidence intervals, there is no systematic pattern in the binned residual plots. As a result, no transformation is performed on variables, and the model demonstrates an acceptable model fit. There are no significant outliers, high-leverage points, or influential points identified in the logistic regression model.
+
+The confusion matrix is shown below. The model’s accuracy using 0.5 as the cutoff for predicting the small business loan default rate is 0.7972. The ROC curve shows the percentage of true positives predicted by the model as the prediction probability cutoff lowers from 1 to 0. The sensitivity is 0.4216, and the specificity is 0.9267. In this case, the area under the curve is 0.833, which is relatively high and shows a reasonably good model performance.\
+
+
+```{r logistic_confusion_matrix, echo = FALSE, results = "asis", message = FALSE, warning = FALSE, fig.width=5,fig.height=4,fig.align='center'}
+#Confusion matrix with 0.5 threshold
+glm.probs <- predict(lr, sbl_reduced, type = "response")
+
+conf_mat <- confusionMatrix(as.factor(ifelse(glm.probs>=0.5,
+                "Defaulted","Not Defaulted")), 
+                sbl_reduced$Default_Status, 
+                positive = "Defaulted") 
+
+# Accuracy
+accuracy <- conf_mat$overall["Accuracy"]
+
+# True positive rate and True negative rate
+TP_TN <- conf_mat$byClass[c("Sensitivity","Specificity")] 
+
+conf_mat_table <- conf_mat$table
+print(xtable(conf_mat_table, caption = 'model confusion matrix', 
+             digits = 4), comment=FALSE)
+```
+
+\pagebreak
+```{r logistic_roc, echo = FALSE, results = "asis", message = FALSE, warning = FALSE, fig.width=4.5,fig.height=3,fig.align='center',fig.cap="Logistic Regression Receiver Operating Characteristic (ROC) Curve"}
+roc_logistic <- roc(sbl_reduced$Default_Status,glm.probs,
+    print.thres=0.5,print.auc=T,plot=T,legacy.axes=T,col="red3")
+```
+
+## V. __Conclusion__
+
+### Key Takeaways
+
+For our first research question, all in-scope variables share a significant relationship with the amount of loan covered by the SBA. We find that the employee count and the loan term positively correlate to the amount guaranteed by the SBA. The intuition is that more employees and longer loan terms both point to an increase in the loan amount requested by the company. Larger businesses tend to provide more jobs and require additional capital investments than smaller ones. Similarly, we would expect the requested loan amount to be greater as the loan terms increase. Therefore, when companies request loans with higher dollar values, the amount covered by the SBA also increases. For example, a 10% coverage on a one-million-dollar loan is higher than the loan coverage of 100,000 dollars at the same percentage. On the other side, we see that the amount the SBA covers decreases if the business has a revolving line of credit. 
+
+For our second research question, amongst the variables considered via apriori variable selection, we find eight of them significant at the $\alpha=0.05$ significance level: (1) the loan term, (2) the number of employees, (3) the number of jobs created, (4) whether the business is in urban or rural areas, (5) the revolving line of credit, (6) whether the loan is part of the LowDoc Loan program, (7) whether the loan was disbursed during recession years between 2007 and 2009, and (8) SBA’s guaranteed amount of approved. The loan term has the greatest impact on the probability of loan folding. Considering a loan of 20 years, as opposed to a 3-year loan, we expect the loan with a shorter term at a higher risk of default. One likely reason is that the shorter timeframe gives small businesses less time to manage their cash flow and pay back on time. Additionally, the 2008 recession is a crucial driver of the loan default status. According to Glennon and Nigro (2005), small businesses are more sensitive to local and industry time-varying economic trends. A market slowdown increases the likelihood of default. This explanation aligns with our research finding that the economic downturn has a comparably large negative impact on the default status of small businesses. We suspect that the reduced customer demand and decreased revenue during the recession are the leading causes. 
+
+### Limitations
+
+Our primary limitation comes from a lack of understanding of the dataset collection process. Therefore, though we find the presence of outliers in the data, we cannot verify whether they are valid observations. In addition, we have restricted the acceptable values for categorical variables by including only loan records with Yes or No answers. Again, this primarily arose because we do not have additional insights into the data collection process, making the interpretation difficult in the context of our research question. 
+
+We have only considered three variables for our first research questions. Hence, including more variables in the dataset can lead to a more holistic understanding. The proportion of variation of the current linear regression fit will likely improve once more predictors are used. By limiting our inference to three variables, we are unable to assess other significant relationships that may impact our outcome variable. We may also find our currently considered variables insignificant once we include additional variables. 
+
+In assessing the accuracy of our logistic regression model, we find that the true positive rate is relatively low at 0.42, although the specificity is quite high (0.93). The sensitivity indicates that about 42% of defaulted loans are correctly classified, while the specificity shows that 93% of loans paid in full are accurately labeled. We believe the relatively lower sensitivity can be justified by the imbalanced data set where defaulted loans represent only about 26% of loans in North Carolina.
+
+
+### Future Work
+
+Our first proposed future work is expanding the research to the entirety of the U.S. rather than restricting only to the state of North Carolina. The heat map (Figure 3) below shows the default rate of loans in small businesses by states in the continental United States. The warm color indicates a high loan default rate of up to 0.38. It appears that the southwest and the southeast of the United States have relatively high default rates. In contrast, the colder color represents the low default rates, primarily depicting the situation in the northern region of the states. As such, additional insights can be gained by evaluating the loan default rate across states.
+
+Similarly, we can incorporate industries of small businesses in our analysis. Different industries face their unique challenges, not accounted for in the current analysis. Laws, regulations, and the black swan effects also vary across sectors. Thereby, we might be able to better model these risks into our understanding of potential loan defaults by segmenting across different industries.  
+
+```{r futurework, echo = FALSE, results = "asis", message = FALSE, warning = FALSE, fig.width=6,fig.height=2.5,fig.align='center',fig.cap="Default Rate of Loan by States in Continental US"}
+##Remove blank row or rows of binary variables that contain values other than yes and no
+sbl$NewExist[sbl$NewExist == 0] <- NA
+sbl$UrbanRural[sbl$UrbanRural == 0] <- NA
+sbl <- sbl[!is.na(sbl$RevLineCr) == TRUE ,]
+sbl <- sbl[!is.na(sbl$NewExist) == TRUE ,]
+sbl <- sbl[!is.na(sbl$UrbanRural) == TRUE ,]
+sbl <- sbl[!is.na(sbl$Name) == TRUE ,]
+sbl <- sbl[!is.na(sbl$City) == TRUE ,]
+sbl <- sbl[!is.na(sbl$State) == TRUE ,]
+sbl <- sbl[!is.na(sbl$Bank) == TRUE ,]
+sbl <- sbl[!is.na(sbl$BankState) == TRUE ,]
+sbl <- sbl[!is.na(sbl$LowDoc) == TRUE ,]
+sbl <- sbl[!is.na(sbl$DisbursementDate) == TRUE ,]
+sbl <- sbl[!is.na(sbl$DisbursementGross) == TRUE ,]
+sbl <- sbl[!is.na(sbl$MIS_Status) == TRUE ,]
+sbl <- subset(sbl, RevLineCr =="Y" | RevLineCr =="N")
+sbl <- subset(sbl, LowDoc =="Y" | LowDoc =="N")
+
+##Remove '$' sign and commas then convert to double in the money columns and store the values in new columns
+sbl$SBA_Appv_num <-str_replace_all(sbl$SBA_Appv,"[\\$,]","")%>% as.double()
+sbl$GrAppv_num <-str_replace_all(sbl$GrAppv,"[\\$,]","") %>% as.double()
+sbl$ChgOffPrinGr_num <-str_replace_all(sbl$ChgOffPrinGr,"[\\$,]","") %>% as.double()
+sbl$BalanceGross_num <-str_replace_all(sbl$BalanceGross,"[\\$,]","") %>% as.double()
+sbl$DisbursementGross_num <-str_replace_all(sbl$DisbursementGross,"[\\$,]","") %>% as.double()
+
+
+## Extract the year of disbursement from Disbursement Date
+sbl$Disbursement_Year <- year(as.Date(sbl$DisbursementDate,"%d-%b-%y"))
+
+##Factor Categorical Variables listed as numeric
+sbl$NewExist_fac <- factor(sbl$NewExist, levels = c("1","2"), 
+                        labels = c("Existing Business","New Business"))
+
+sbl$UrbanRural_fac <- factor(sbl$UrbanRural, levels = c("1","2"), 
+                        labels = c("Urban","Rural"))
+
+sbl$RevLineCr_fac <- as.factor(sbl$RevLineCr)
+
+us_states <- map_data("state")
+sbl_state <- sbl %>% 
+  mutate(State=tolower(abbr2state(State))) %>%
+  group_by(State) %>%
+  dplyr::summarize(Default_Rate = (sum((MIS_Status) == "CHGOFF")/ n()),na.rm=TRUE)
+
+us_states %>% 
+  left_join(sbl_state, by=c("region"="State")) %>%
+  ggplot(aes(x=long,y=lat,group=group, fill=Default_Rate)) +
+  geom_polygon(color = "gray90", size = 0.1) +
+  coord_map(projection = "albers", lat0 = 45, lat1 = 55) +
+  scale_fill_continuous(type = "viridis", breaks = c(0.10, 0.17, 0.24, 0.31, 0.38))+
+  labs(fill = "Default Rate") +
+  theme(legend.position="right",
+        axis.line=element_blank(),
+        axis.text=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title=element_blank(),
+        panel.background=element_blank(),
+        panel.border=element_blank(),
+        panel.grid=element_blank())
+```
+
+\pagebreak
+## __Appendix__
+```{r appendix1, echo = FALSE, results = "asis", message = FALSE, warning = FALSE, fig.width=8,fig.height=4,fig.align='center'}
+#Code Book
+data_dict <- matrix(
+  c("LoanNr_ChkDgt","Name","City","State",
+    "Zip", "Bank", "BankState","NAICS", "ApprovalDate",
+    "ApprovalFY","Term","NoEmp","NewExist","CreateJob",
+    "RetainedJob","FranchiseCode","UrbanRural","RevLineCr",
+    "LowDoc","ChgOffDate","DisbursementDate","DisbursementGross",
+    "BalanceGross","MIS_Status","ChgOffPrinGr","GrAppv","SBA_Appv",
+    "Identifier Primary Key","Borrower Name","Borrower City",
+    "Borrower State","Borrower Zip Code","Bank Name",
+    "Bank State","North American Industry Classification System Code",
+    "Date SBA Commitment Issued","Fiscal Year of Commitment",
+    "Loan Term in Months","Number of Business Employees",
+    "1 = Existing Business, 2 = New Business, 0 = Undefined",
+    "Number of Jobs Created","Number of Jobs Retained",
+    "Franchise Code, (00000 or 00001) = No Franchise",
+    "1 = Urban, 2 = Rural, 0 = Undefined",
+    "Revolving Line of Credit: Y = Yes, N = No",
+    "LowDoc Loan Program: Y = Yes, N = No",
+    "The date when a loan is declared to be in default",
+    "Disbursement Date","Amount Disbursed","Gross Amount Outstanding",
+    "Loan Status Charged off = CHGOFF, Paid in Full =PIF",
+    "Charged-off Amount","Gross Amount of Loan Approved by Bank",
+    "SBA’s Guaranteed Amount of Approved Loan"),nrow=27,ncol=2)
+kable(data_dict,
+      col.names=c("Variable","Description"),
+      #format="html",
+      booktabs=T,
+      caption="Code Book") %>% 
+  kable_styling(position="center",latex_options = c("hold_position"))
+```
+
+### Figure 4. Assumptions Check for the Multiple Linear Regression Model
+```{r linear_assumptions_check, echo = FALSE, results = "asis", message = FALSE, warning = FALSE,fig.width=9,fig.height=7,fig.align='center'}
+par(mfrow=c(2,2))
+plot(linear_regression)
+```
+### Figure 5. Assumptions Check for the Logistic Regression Model
+```{r logistic_assumptions_check, echo = FALSE, results = "asis", message = FALSE, warning = FALSE,fig.width=8,fig.height=6,fig.align='center'}
+
+#binned residual plots
+  
+#save the raw residuals
+rawresid1 <- residuals(lr,"resp")
+
+#binned residual plots
+par(mfrow = c(3, 2))
+
+binnedplot(x=fitted(lr),y=rawresid1,xlab="Pred. probabilities",
+           col.int="red4",ylab="Avg. residuals",
+           main="Binned residual plot",col.pts="navy")
+
+binnedplot(x=sbl_reduced$Term,y=rawresid1,xlab="Term",
+           col.int="red4",ylab="Avg. residuals",
+           main="Binned residual plot",col.pts="navy")
+
+binnedplot(x=sbl_reduced$EmployeeCount,y=rawresid1,xlab="Employee count",
+           col.int="red4",ylab="Avg. residuals",
+           main="Binned residual plot",col.pts="navy")
+
+binnedplot(sbl_reduced$JobCreated,rawresid1,xlab="Job created",
+           col.int="red4",ylab="Avg. residuals",
+           main="Binned residual plot",col.pts="navy")
+
+binnedplot(sbl_reduced$JobRetained,rawresid1,xlab="Job retained",
+           col.int="red4",ylab="Avg. residuals",
+           main="Binned residual plot",col.pts="navy")
+
+binnedplot(sbl_reduced$SBA_Approved_Amount,rawresid1,
+           xlab="SBA approved amount",
+           col.int="red4",ylab="Avg. residuals",
+           main="Binned residual plot",col.pts="navy")
+
+```
+
+
+```{r logistic_vif, echo = FALSE, results = "asis", message = FALSE, warning = FALSE,fig.width=6,fig.height=5,fig.align='center',out.width='52%'}
+# ## Check multicolinearity
+# vif_values <- vif(lr)
+# barplot(vif_values, main = "VIF Values", 
+#         horiz = TRUE, 
+#         names.arg=c("Term","Employee Count","New or Existing Business",
+#                     "Job Created","Job Retained","Urban or Rural Location",
+#                     "Revolving Line of Credit","Low Document Program",
+#                     "Recession","SBA Approved Amount"), col = "steelblue", 
+#         las=2, xlim = c(0,2.5), cex.names=0.6)
+# axis(side = 1, labels = FALSE)
+# text(seq(1, 10, by=1), par("usr")[3] - 0.2, 
+#      labels = c("Term","Employee Count","New or Existing Business",
+#                 "Job Created","Job Retained","Urban or Rural Location",
+#                 "Revolving Line of Credit","Low Document Program","Recession",
+#                 "SBA Approved Amount"), 
+#      srt = 45, adj = 0.2, pos = 1, cex = 0.66,xpd = TRUE)
+# abline(v = 2, lwd = 3, lty = 2)
+
+```
+
+
+```{r linear_vif, echo = FALSE, results = "asis", message = FALSE, warning = FALSE,fig.width=6,fig.height=5,fig.align='center',out.width='49%'}
+# ## Check multicolinearity
+# linear_vif_values <- vif(linear_regression)
+# #par(mfrow = c(2, 2))
+# barplot(linear_vif_values, main = "VIF Values",
+#         horiz = TRUE,
+#         names.arg=c("Term","Employee Count",
+#                     "Revolving Line of Credit"), 
+#         col = "steelblue",
+#         las=2, xlim = c(0,2.5), cex.names=0.6)
+# axis(side = 1, labels = FALSE)
+# abline(v = 2, lwd = 3, lty = 2)
+
+```
+
+
+### Figure 6. Cook's Distance for the Multiple Linear Regression Model
+```{r linear_outliers, echo = FALSE, results = "asis", message = FALSE, warning = FALSE,fig.width=8,fig.height=7,fig.align='center'}
+## Find high leverage points - no high leverage points found
+sbl_reduced_50$hats <- hatvalues(linear_regression)
+high_leverage_points = sbl_reduced_50[sbl_reduced_50$cooksdistance > 2,]
+
+## Find high influence points - no influential points found
+sbl_reduced_50$cooksdistance <- cooks.distance(linear_regression)
+influential_points = sbl_reduced_50[sbl_reduced_50$cooksdistance > 1,]
+
+layout(matrix(c(1,1,2,3), 2, 2, byrow = TRUE),
+       widths=c(1,1), heights=c(1,1))
+       
+## influential points
+plot(linear_regression,which=4,col=c("blue4"))
+
+## leverage points
+n <- nrow(model.matrix(linear_regression))
+p <- ncol(model.matrix(linear_regression)) 
+lev_scores <- hatvalues(linear_regression)
+plot(lev_scores,col=ifelse(lev_scores > (2*p/n), 'red2', 'navy'),
+     type="h",ylab="Leverage score",xlab="Obs. number",
+     main="Leverage Scores") 
+text(x=c(1:n)[lev_scores > (2*p/n)]+c(rep(2,4),-2,2),
+     y=lev_scores[lev_scores > (2*p/n)],
+     labels=c(1:n)[lev_scores > (2*p/n)])
+
+plot(linear_regression,which=5,col=c("blue4"))
+```
+
+
+### Figure 7. Cook's Distance for the Logistic Regression Model
+```{r logistic_outliers, echo = FALSE, results = "asis", message = FALSE, warning = FALSE,fig.width=7,fig.height=6,fig.align='center'}
+## Find high leverage points - no high leverage points found
+sbl_reduced$hats <- hatvalues(lr)
+high_leverage_points = sbl_reduced[sbl_reduced$cooksdistance > 2,]
+
+## Find high influence points - no influential points found
+sbl_reduced$cooksdistance <- cooks.distance(lr)
+influential_points = sbl_reduced[sbl_reduced$cooksdistance > 1,]
+
+layout(matrix(c(1,1,2,3), 2, 2, byrow = TRUE), 
+       widths=c(1,1), heights=c(1,1))
+       
+## influential points
+plot(lr,which=4,col=c("blue4"))
+
+## leverage points
+n <- nrow(model.matrix(lr))
+p <- ncol(model.matrix(lr)) 
+lev_scores <- hatvalues(lr)
+plot(lev_scores,col=ifelse(lev_scores > (2*p/n), 'red2', 'navy'),
+     type="h", ylab="Leverage score",xlab="Obs. number",
+     main="Leverage Scores") 
+text(x=c(1:n)[lev_scores > (2*p/n)]+c(rep(2,4),-2,2),
+     y=lev_scores[lev_scores > (2*p/n)],
+     labels=c(1:n)[lev_scores > (2*p/n)])
+
+plot(lr,which=5,col=c("blue4"))
+```
+
+## __References__
+
+Glennon, D., & Nigro, P. (2005). Measuring the default risk of small business loans: A survival analysis approach. *Journal of Money, Credit and Banking*, *37*(5), 923–947.
+
+Li, M., Mickel, A.; & Taylor, S. (2018). “Should this loan be approved or denied?”: A large dataset with class assignment guidelines. *Journal of Statistics Education*, *26*(1), 55-66. https://doi.org/10.1080/10691898.2018.1434342
+
+Ou, C. (2005). *Banking consolidation and small business lending: A review of recent research working papers.* Office of Advocacy, U.S. Small Business Administration.
+
+\newpage
+```{r ref.label=knitr::all_labels(), echo=FALSE, eval=FALSE}
+```
+
+\newpage
+
+## Red Team Group Project Work Breakdown Summary
+
+### Project Part I - EDA
+* Data Overview
+
+  + Heather did all the pre-processing of data and completed this section of the report
+
+* Primary relationship of interest
+
+  + Jenny did everything in this part
+
+* Other Characteristics
+
+  + Jenny did everything in this part
+
+* Potential challenges
+
+  + Aditya and Isha contributed to this part
+
+* Additional Notes
+
+  + All the graphs in the main text and appendix are the work of Jenny and Heather
+  + Aditya went through all sections and consolidated the different working files
+  + Heather went through the document to catch grammar and typos
+
+### Project Part II - Statistical Analysis
+* Overview
+
+  + Heather did everything in this section
+
+* Models
+
+  + Jenny and Heather completed the first paragraph for MLR
+  + Aditya completed the second paragaph for Logistic Regression
+
+* Variable Selection
+
+  + Jenny and Heather completed the first paragraph for MLR
+  + Aditya completed the second paragraph for Logistic Regression
+  + Heather adjusted content in the second paragaph for logistic regression
+
+* Challenges
+
+  + Heather added challenges one
+  + Aditya added challenges two and solutions
+
+* Additional Notes
+
+  + Heather went through the file and reviewed everything and made adjustments accordingly regarding the content, grammar, and spelling
+
+
+### Project Part III - Final Report
+* Abstract
+
+  + Aditya wrote the abstract
+  + Heather and Jenny proofread and added content
+
+* Introduction
+
+  + Jenny contributed the first paragraph
+  + Aditya wrote the rest of the paragraphs
+  + Heather and Jenny proofread and added content
+
+* Methods
+  + EDA
+    + Aditya added the charts for the EDA. 
+  + Data
+    + Isha contributed to the intital interpretations
+    + Aditya edited the interpretations
+    + Aditya added explanations for the first research question EDA
+    + Heather wrote the EDA of the second research question
+    + Heather and Jenny proofread and added content
+
+  + Model
+    + Aditya wrote the part for the first research question. 
+    + Heather wrote the part for the second research question, and Jenny edited
+    + Heather and Jenny proofread and added content
+
+  + Model Assessment
+    + Heather wrote the part for the second research question, and Jenny edited
+    + Aditya consolidated this section for both MLR and Logistic
+    + Heather and Jenny proofread and added content
+
+* Results
+
+  + First research question
+    + Isha wrote the r code for the regression output and Aditya edited it.
+    + Isha and Aditya wrote the interpretation of the linear regression 
+    + Heather and Jenny proofread and added content
+      - Heather reformatted the regression table results to meet the requirements
+      - Jenny edited the interpretation of the linear regression model
+
+  + Second research question
+    + Heather and Jenny wrote the content
+    + Heather reformatted the regression table results to meet the requirements
+
+* Conclusion
+
+  + Key takeaway
+    - Aditya and Isha wrote the content
+    - Heather and Jenny proofread and added content
+  
+  + Limitation
+    - Aditya wrote the content
+    - Heather and Jenny proofread and added content
+  
+  + Future work
+    - Aditya wrote the content
+    - Heather and Jenny proofread and added content
+
+* Appendix
+
+  + Heather wrote the r code for the variable code book, the descriptive analysis table, and summary statistics for logistic regression and edited the summary statistics for linear regression, confusion matrix, roc curve
+
+  + Jenny wrote the r code for the heatmap, binned residuals, cook's distance, and VIF for logistic regression
+
+  + Isha wrote the r code for the model fit, cook's distance and VIF for linear regression
+  + Isha adjusted the sizes of the graphs 
+
+* Reference
+  + Aditya wrote the reference for the dataset
+  + Isha added the reference to the end 
+  + Heather and Jenny added additional references based on added content
+
+* Additional Notes
+
+  + Heather and Jenny went through the file section by section to ensure the formatting is correct and that no typos and significant grammar mistakes
+  + Isha went through the file to ensure the formatting is correct and no typos or grammar mistakes
+
+### Project part IV - Presentation
+
+* Heather created the slide deck and outlined the presentation structure
+* Aditya and Heather created slides slides 2 through 8, and slide 16
+* Isha edited slides 3-6
+* Isha presented 1-6
+* Aditya presented 6-9
+* Heather and Jenny created slides 9 through 16. Heather presented slides from 11 to 13, and Jenny presented slides from 14 to 16. 
+* Heather, Jenny, and Aditya will took questions at the end. 
