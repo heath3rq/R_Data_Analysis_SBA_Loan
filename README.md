@@ -21,9 +21,7 @@ Two types of models were used to answer the research questions:
 * ***The logistic regression models*** helps estimate the probability of an event occurring (i.e., loans paid in full) based on a given set of
 independent variables. In logistic regression, a logit transformation is applied to the odds, which is the probability of success divided by the probability of failure. In the case of the small business loan, the preferred outcome is when a loan gets paid in full.
 
-## Data Source
-
-[Should this loan be approved or denied?](https://doi.org/10.1080/10691898.2018.1434342)
+## Data Source: [Should this loan be approved or denied?](https://doi.org/10.1080/10691898.2018.1434342)
 
 ## Conclusion
 
